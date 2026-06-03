@@ -5,6 +5,7 @@
 #include <cstring>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <BleKeyboard.h>
 
 #include "input/Button.h"
 #include "irblast/UniversalTvBlaster.h"
@@ -13,6 +14,14 @@
 #define EXCLUDE_EXOTIC_PROTOCOLS
 #define EXCLUDE_UNIVERSAL_PROTOCOLS
 #include <IRremote.hpp>
+
+// Bad Keyboard
+static BleKeyboard bleKeyboard("Keyboard", "ESP32", 100);
+static uint8_t badkbPresetIndex = 0;
+static char badkbStatus[40] = "";
+static bool badkbStaticDrawn = false;
+static uint8_t badkbPrevIndex = 0xFF;
+static char badkbPrevStatus[40] = "";
 
 // TFT pins:
 // SCL=22, SDA=23, RES=4, CS=5, D/C=2
@@ -59,16 +68,16 @@ static constexpr uint32_t OK_HOLD_DELETE_ALL_MS = 10000;
 static constexpr uint32_t MAIN_STATUS_MS = 1600;
 static constexpr uint32_t UNIVERSAL_UI_REFRESH_MS = 125;
 static constexpr uint32_t PROJECTOR_FAST_STEP_MS = 90;
-static constexpr uint32_t UI_SLEEP_MS = 60000;
+static constexpr uint32_t UI_SLEEP_MS = 100000;
 static constexpr uint8_t TV_BASIC_COUNT = 20;
 static constexpr uint8_t PROJECTOR_BASIC_COUNT = 20;
 static constexpr uint16_t WEB_PORT = 80;
 static constexpr char WEB_AP_PASSWORD[] = "irpanel123";
 
-static const char *MAIN_MENU_ITEMS[] = {"Zapisz IR", "Wyslij IR", "Uniwersal", "TV 20", "Proj 20", "Proj FAST", "Web"};
+static const char *MAIN_MENU_ITEMS[] = {"Zapisz IR", "Wyslij IR", "Uniwersal", "TV 20", "Proj 20", "Proj FAST", "Web", "BadKB"};
 static constexpr uint8_t MAIN_MENU_COUNT = sizeof(MAIN_MENU_ITEMS) / sizeof(MAIN_MENU_ITEMS[0]);
 
-enum class UiScreen : uint8_t { Splash, MainMenu, Capture, SendList, UniversalTv, TvBasic20, Projector20, ProjectorFast, WebPanel };
+enum class UiScreen : uint8_t { Splash, MainMenu, Capture, SendList, UniversalTv, TvBasic20, Projector20, ProjectorFast, WebPanel, BadKeyboard };
 
 struct StoredSignal {
   IRData data;
@@ -356,6 +365,70 @@ static void stopAllAutomations() {
   tvBlaster.stop();
   stopProjectorFast();
 }
+
+// Bad Keyboard presets - TYLKO 3: YouTube, YT Android, Disconnect
+static constexpr uint8_t BADKB_PRESET_COUNT = 3;
+
+struct BadKbPreset {
+  const char *name;
+  void (*run)();
+};
+
+static void runBadKbYouTube() {
+  if (!bleKeyboard.isConnected()) return;
+  // iOS: Home -> Spotlight -> Safari -> URL
+  bleKeyboard.press(KEY_LEFT_GUI);
+  bleKeyboard.press('h');
+  bleKeyboard.releaseAll();
+  delay(300);
+  bleKeyboard.press(KEY_LEFT_GUI);
+  bleKeyboard.press(' ');
+  bleKeyboard.releaseAll();
+  delay(400);
+  bleKeyboard.println("safari");
+  delay(200);
+  bleKeyboard.press(KEY_RETURN);
+  bleKeyboard.releaseAll();
+  delay(1500);
+  bleKeyboard.press(KEY_LEFT_GUI);
+  bleKeyboard.press('l');
+  bleKeyboard.releaseAll();
+  delay(200);
+  bleKeyboard.println("youtube.com");
+  delay(100);
+  bleKeyboard.press(KEY_RETURN);
+  bleKeyboard.releaseAll();
+}
+
+static void runBadKbYouTubeAndroid() {
+  if (!bleKeyboard.isConnected()) return;
+  // Android: Home -> Search -> youtube.com
+  bleKeyboard.press(KEY_HOME);
+  bleKeyboard.releaseAll();
+  delay(500);
+  bleKeyboard.press(KEY_LEFT_GUI);
+  bleKeyboard.press(' ');
+  bleKeyboard.releaseAll();
+  delay(400);
+  bleKeyboard.println("youtube.com");
+  delay(200);
+  bleKeyboard.press(KEY_RETURN);
+  bleKeyboard.releaseAll();
+}
+
+static void runBadKbDisconnect() {
+  bleKeyboard.end();
+  delay(500);
+  bleKeyboard.begin();
+}
+
+static const BadKbPreset BADKB_PRESETS[BADKB_PRESET_COUNT] = {
+  {"YouTube", runBadKbYouTube},
+  {"YT Android", runBadKbYouTubeAndroid},
+  {"Disconnect", runBadKbDisconnect}
+};
+
+static void drawBadKeyboardScreen();
 
 static void wakeDisplay() {
   if (!displaySleeping) {
@@ -1430,11 +1503,18 @@ static void openSelectedMainMenuItem() {
     startProjectorFast();
     invalidateAllUiCaches();
     uiScreen = UiScreen::ProjectorFast;
-  } else {
+  } else if (selectedMain == 6) {
     tvBlaster.stop();
     stopProjectorFast();
     invalidateAllUiCaches();
     uiScreen = UiScreen::WebPanel;
+  } else if (selectedMain == 7) {
+    tvBlaster.stop();
+    stopProjectorFast();
+    setText(badkbStatus, sizeof(badkbStatus), "");
+    bleKeyboard.begin();
+    invalidateAllUiCaches();
+    uiScreen = UiScreen::BadKeyboard;
   }
   uiDirty = true;
 }
@@ -1460,11 +1540,44 @@ static void renderUi() {
     drawProjector20Screen();
   } else if (uiScreen == UiScreen::ProjectorFast) {
     drawProjectorFastScreen();
+  } else if (uiScreen == UiScreen::BadKeyboard) {
+    drawBadKeyboardScreen();
   } else {
     drawWebPanelScreen();
   }
 
   uiDirty = false;
+}
+
+static void drawBadKeyboardScreen() {
+  const BadKbPreset &preset = BADKB_PRESETS[badkbPresetIndex];
+  if (!badkbStaticDrawn) {
+    drawPanelChrome("BAD KB");
+    drawNavArrows();
+    tft.fillRoundRect(18, 28, tft.width() - 36, 28, 6, C_BG);
+    drawCenteredBand("OK run", 62, 10, 1, C_HILITE);
+    badkbStaticDrawn = true;
+    badkbPrevIndex = 0xFF;
+    badkbPrevStatus[0] = '\0';
+  }
+  if (badkbPrevIndex != badkbPresetIndex) {
+    tft.fillRoundRect(18, 28, tft.width() - 36, 28, 6, C_BG);
+    drawCenteredBand(preset.name, 31, 10, 1, C_TEXT);
+    char idxLine[22];
+    std::snprintf(idxLine, sizeof(idxLine), "[%u/%u]", badkbPresetIndex + 1, BADKB_PRESET_COUNT);
+    drawCenteredBand(idxLine, 44, 10, 1, C_TEXT_DIM);
+    badkbPrevIndex = badkbPresetIndex;
+  }
+  char status[40];
+  if (bleKeyboard.isConnected()) {
+    std::snprintf(status, sizeof(status), "Polaczono");
+  } else {
+    std::snprintf(status, sizeof(status), "Czekam na BT...");
+  }
+  if (std::strncmp(badkbPrevStatus, status, sizeof(badkbPrevStatus)) != 0) {
+    drawCenteredBand(status, 72, 8, 1, C_TEXT_DIM);
+    setText(badkbPrevStatus, sizeof(badkbPrevStatus), status);
+  }
 }
 
 static void handleInput() {
@@ -1521,6 +1634,9 @@ static void handleInput() {
     } else if (uiScreen == UiScreen::Projector20) {
       projector20Index = (projector20Index == 0) ? (PROJECTOR_BASIC_COUNT - 1) : (projector20Index - 1);
       uiDirty = true;
+    } else if (uiScreen == UiScreen::BadKeyboard) {
+      badkbPresetIndex = (badkbPresetIndex == 0) ? (BADKB_PRESET_COUNT - 1) : (badkbPresetIndex - 1);
+      uiDirty = true;
     }
   }
 
@@ -1538,6 +1654,9 @@ static void handleInput() {
       uiDirty = true;
     } else if (uiScreen == UiScreen::Projector20) {
       projector20Index = (projector20Index + 1) % PROJECTOR_BASIC_COUNT;
+      uiDirty = true;
+    } else if (uiScreen == UiScreen::BadKeyboard) {
+      badkbPresetIndex = (badkbPresetIndex + 1) % BADKB_PRESET_COUNT;
       uiDirty = true;
     }
   }
@@ -1655,6 +1774,20 @@ static void handleInput() {
       noteInteraction();
       uiDirty = true;
     }
+  } else if (uiScreen == UiScreen::BadKeyboard) {
+    okSendHoldTracking = false;
+    okSendHoldDoneSingle = false;
+    okSendHoldDoneAll = false;
+    if (consumePress(btnOk)) {
+      noteInteraction();
+      if (bleKeyboard.isConnected()) {
+        BADKB_PRESETS[badkbPresetIndex].run();
+        setText(badkbStatus, sizeof(badkbStatus), "Wyslano!");
+      } else {
+        setText(badkbStatus, sizeof(badkbStatus), "Brak polaczenia");
+      }
+      uiDirty = true;
+    }
   } else {
     okSendHoldTracking = false;
     okSendHoldDoneSingle = false;
@@ -1668,11 +1801,13 @@ static void handleInput() {
     noteInteraction();
     if (uiScreen == UiScreen::Capture || uiScreen == UiScreen::SendList || uiScreen == UiScreen::UniversalTv ||
         uiScreen == UiScreen::TvBasic20 || uiScreen == UiScreen::Projector20 || uiScreen == UiScreen::ProjectorFast ||
-        uiScreen == UiScreen::WebPanel) {
+        uiScreen == UiScreen::WebPanel || uiScreen == UiScreen::BadKeyboard) {
       if (uiScreen == UiScreen::UniversalTv) {
         tvBlaster.stop();
       } else if (uiScreen == UiScreen::ProjectorFast) {
         stopProjectorFast();
+      } else if (uiScreen == UiScreen::BadKeyboard) {
+        bleKeyboard.end();
       }
       invalidateAllUiCaches();
       uiScreen = UiScreen::MainMenu;

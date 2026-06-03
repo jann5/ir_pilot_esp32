@@ -260,4 +260,6 @@ bool UniversalTvBlaster::sendCodeByIndex(uint16_t index) {
   IrReceiver.restartAfterSend();
 
   return true;
+
 }
+
