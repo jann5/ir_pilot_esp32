@@ -82,6 +82,7 @@ The default access-point password is configured in `src/main.cpp`.
 ## Project status
 
 The project is still under active development. Current work focuses on hardware testing, reliable button input, IR signal compatibility, and improving the user interface.
+See [TODO.md](TODO.md) for a short list of low-cost follow-up items.
 
 ## Libraries
 
