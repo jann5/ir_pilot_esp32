@@ -2,6 +2,14 @@
 
 Portable universal IR remote controller built with an ESP32. The device can capture, store and transmit infrared signals, control common TVs and projectors, and provide a small local web panel over Wi-Fi.
 
+## Hardware photos
+
+Current prototype assembled on a breadboard:
+
+![IR Pilot ESP32 prototype](docs/images/ir-pilot-build-1.png)
+
+![IR Pilot ESP32 assembled device](docs/images/ir-pilot-build-2.png)
+
 ## Features
 
 - Capture and save up to 10 IR signals in persistent storage.
@@ -83,4 +91,3 @@ Dependencies are defined in [`platformio.ini`](platformio.ini):
 - Adafruit ST7735 and ST7789 Library
 - IRremote
 - ESP32 BLE Keyboard
-
