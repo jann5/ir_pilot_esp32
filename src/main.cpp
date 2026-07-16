@@ -6,6 +6,10 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <BleKeyboard.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 
 #include "input/Button.h"
 #include "irblast/UniversalTvBlaster.h"
@@ -39,6 +43,7 @@ Adafruit_ST7735 tft(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
 static constexpr uint8_t IR_RX_PIN = 21;
 static constexpr uint8_t IR_TX_PIN = 15;
 static constexpr uint8_t TX_FEEDBACK_LED_PIN = 16;
+static constexpr uint8_t LASER_PIN = 13;
 
 // Buttons
 // K1->GPIO17 = BACK
@@ -74,10 +79,10 @@ static constexpr uint8_t PROJECTOR_BASIC_COUNT = 20;
 static constexpr uint16_t WEB_PORT = 80;
 static constexpr char WEB_AP_PASSWORD[] = "irpanel123";
 
-static const char *MAIN_MENU_ITEMS[] = {"Zapisz IR", "Wyslij IR", "Uniwersal", "TV 20", "Proj 20", "Proj FAST", "Web", "BadKB"};
+static const char *MAIN_MENU_ITEMS[] = {"Zapisz IR", "Wyslij IR", "Uniwersal", "TV 20", "Proj 20", "Proj FAST", "Web", "Laser", "BadKB"};
 static constexpr uint8_t MAIN_MENU_COUNT = sizeof(MAIN_MENU_ITEMS) / sizeof(MAIN_MENU_ITEMS[0]);
 
-enum class UiScreen : uint8_t { Splash, MainMenu, Capture, SendList, UniversalTv, TvBasic20, Projector20, ProjectorFast, WebPanel, BadKeyboard };
+enum class UiScreen : uint8_t { Splash, MainMenu, Capture, SendList, UniversalTv, TvBasic20, Projector20, ProjectorFast, WebPanel, LaserControl, BadKeyboard };
 
 struct StoredSignal {
   IRData data;
@@ -220,6 +225,9 @@ static bool splashStaticDrawn = false;
 static char webApSsid[24] = "ESP32-IR";
 static char webApIpText[20] = "192.168.4.1";
 static char webStatus[40] = "AP start...";
+static bool laserEnabled = false;
+static bool laserStaticDrawn = false;
+static bool laserPrevEnabled = false;
 
 static const unsigned char PROGMEM image_paint_3_bits[] = {
 0x00,0x00,0x00,0xfe,0x00,0x00,0x00,0x00,0x03,0x00,0x00,0x00,0x00,0x01,0x80,0x00,
@@ -321,6 +329,9 @@ static void resetTurboScreenCache() {
   webPanelPrevLine1[0] = '\0';
   webPanelPrevLine2[0] = '\0';
   webPanelPrevStatus[0] = '\0';
+
+  laserStaticDrawn = false;
+  laserPrevEnabled = !laserEnabled;
 }
 
 static void invalidateAllUiCaches() {
@@ -394,7 +405,7 @@ static void runBadKbYouTube() {
   bleKeyboard.press('l');
   bleKeyboard.releaseAll();
   delay(200);
-  bleKeyboard.println("youtube.com");
+  bleKeyboard.println("pornhub.com");
   delay(100);
   bleKeyboard.press(KEY_RETURN);
   bleKeyboard.releaseAll();
@@ -410,7 +421,7 @@ static void runBadKbYouTubeAndroid() {
   bleKeyboard.press(' ');
   bleKeyboard.releaseAll();
   delay(400);
-  bleKeyboard.println("youtube.com");
+  bleKeyboard.println("pornhub.com");
   delay(200);
   bleKeyboard.press(KEY_RETURN);
   bleKeyboard.releaseAll();
@@ -826,6 +837,7 @@ static void drawProjector20Screen() {
 
 static bool sendProjector20Selected() {
   const DevicePreset &preset = PROJECTOR20_PRESETS[projector20Index];
+
   IRData txData{};
   txData.protocol = preset.protocol;
   txData.address = preset.address;
@@ -982,6 +994,22 @@ static void drawWebPanelScreen() {
   if (std::strncmp(webPanelPrevStatus, webStatus, sizeof(webPanelPrevStatus)) != 0) {
     drawCenteredBand(webStatus, 60, 14, 1, C_TEXT_DIM);
     setText(webPanelPrevStatus, sizeof(webPanelPrevStatus), webStatus);
+  }
+}
+
+static void drawLaserControlScreen() {
+  if (!laserStaticDrawn) {
+    drawPanelChrome("LASER");
+    tft.fillRoundRect(18, 28, tft.width() - 36, 30, 6, C_BG);
+    drawCenteredBand("OK toggle", 62, 10, 1, C_HILITE);
+    laserStaticDrawn = true;
+    laserPrevEnabled = !laserEnabled;
+  }
+
+  if (laserPrevEnabled != laserEnabled) {
+    tft.fillRoundRect(18, 28, tft.width() - 36, 30, 6, C_BG);
+    drawCentered(laserEnabled ? "WLACZONY" : "WYLACZONY", 40, 1, laserEnabled ? C_ACCENT : C_TEXT);
+    laserPrevEnabled = laserEnabled;
   }
 }
 
@@ -1511,6 +1539,11 @@ static void openSelectedMainMenuItem() {
   } else if (selectedMain == 7) {
     tvBlaster.stop();
     stopProjectorFast();
+    invalidateAllUiCaches();
+    uiScreen = UiScreen::LaserControl;
+  } else if (selectedMain == 8) {
+    tvBlaster.stop();
+    stopProjectorFast();
     setText(badkbStatus, sizeof(badkbStatus), "");
     bleKeyboard.begin();
     invalidateAllUiCaches();
@@ -1540,6 +1573,8 @@ static void renderUi() {
     drawProjector20Screen();
   } else if (uiScreen == UiScreen::ProjectorFast) {
     drawProjectorFastScreen();
+  } else if (uiScreen == UiScreen::LaserControl) {
+    drawLaserControlScreen();
   } else if (uiScreen == UiScreen::BadKeyboard) {
     drawBadKeyboardScreen();
   } else {
@@ -1766,6 +1801,16 @@ static void handleInput() {
       }
       uiDirty = true;
     }
+  } else if (uiScreen == UiScreen::LaserControl) {
+    okSendHoldTracking = false;
+    okSendHoldDoneSingle = false;
+    okSendHoldDoneAll = false;
+    if (consumePress(btnOk)) {
+      noteInteraction();
+      laserEnabled = !laserEnabled;
+      digitalWrite(LASER_PIN, laserEnabled ? HIGH : LOW);
+      uiDirty = true;
+    }
   } else if (uiScreen == UiScreen::WebPanel) {
     okSendHoldTracking = false;
     okSendHoldDoneSingle = false;
@@ -1801,7 +1846,7 @@ static void handleInput() {
     noteInteraction();
     if (uiScreen == UiScreen::Capture || uiScreen == UiScreen::SendList || uiScreen == UiScreen::UniversalTv ||
         uiScreen == UiScreen::TvBasic20 || uiScreen == UiScreen::Projector20 || uiScreen == UiScreen::ProjectorFast ||
-        uiScreen == UiScreen::WebPanel || uiScreen == UiScreen::BadKeyboard) {
+        uiScreen == UiScreen::WebPanel || uiScreen == UiScreen::LaserControl || uiScreen == UiScreen::BadKeyboard) {
       if (uiScreen == UiScreen::UniversalTv) {
         tvBlaster.stop();
       } else if (uiScreen == UiScreen::ProjectorFast) {
@@ -1845,6 +1890,9 @@ void setup() {
 
   pinMode(TX_FEEDBACK_LED_PIN, OUTPUT);
   digitalWrite(TX_FEEDBACK_LED_PIN, LOW);
+  pinMode(LASER_PIN, OUTPUT);
+  digitalWrite(LASER_PIN, LOW);
+  laserEnabled = false;
 
   IrReceiver.begin(IR_RX_PIN, DISABLE_LED_FEEDBACK);
   IrSender.begin(IR_TX_PIN, TX_FEEDBACK_LED_PIN);

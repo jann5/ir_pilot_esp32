@@ -9,41 +9,32 @@ void initButton(Button &b) {
   b.changedMs = millis();
   b.lastPressMs = 0;
   b.pressEvent = false;
-  b.pressedLatch = b.activeLow ? (level == LOW) : (level == HIGH);
 }
 
 void updateButton(Button &b, uint32_t nowMs, uint32_t debounceMs, uint32_t edgeLockMs) {
   const bool raw = digitalRead(b.pin);
-
   if (raw != b.lastLevel) {
     b.lastLevel = raw;
     b.changedMs = nowMs;
   }
 
-  if ((nowMs - b.changedMs) < debounceMs || raw == b.stableLevel) {
-    return;
-  }
+  if ((nowMs - b.changedMs) >= debounceMs && raw != b.stableLevel) {
+    const bool previous = b.stableLevel;
+    b.stableLevel = raw;
 
-  b.stableLevel = raw;
+    bool isPress = false;
+    if (b.triggerOnBothEdges) {
+      isPress = true;
+    } else if (b.activeLow) {
+      isPress = (previous == HIGH && b.stableLevel == LOW);
+    } else {
+      isPress = (previous == LOW && b.stableLevel == HIGH);
+    }
 
-  if (b.triggerOnBothEdges) {
-    if ((nowMs - b.lastPressMs) >= edgeLockMs) {
+    if (isPress && (nowMs - b.lastPressMs) >= edgeLockMs) {
       b.lastPressMs = nowMs;
       b.pressEvent = true;
     }
-    return;
-  }
-
-  const bool active = b.activeLow ? (b.stableLevel == LOW) : (b.stableLevel == HIGH);
-  if (!active) {
-    b.pressedLatch = false;
-    return;
-  }
-
-  if (!b.pressedLatch && (nowMs - b.lastPressMs) >= edgeLockMs) {
-    b.lastPressMs = nowMs;
-    b.pressEvent = true;
-    b.pressedLatch = true;
   }
 }
 
